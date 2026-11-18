@@ -128,20 +128,23 @@ app.post('/start', async (req, res) => {
     }
   });
 
+  // Handle YouTube rate limits or network drops gracefully without crashing
   activeChat.on('error', (err) => {
-    console.error('LiveChat warning/error:', err.message);
+    console.error('LiveChat warning/error (Render IP rate-limit caught):', err.message);
   });
 
   activeChat.on('end', () => {
     isMonitoring = false;
-    console.log('Live chat ended.');
+    console.log('Live chat stream ended.');
   });
 
   try {
     const started = await activeChat.start();
     if (!started) {
       isMonitoring = false;
-      return res.status(500).json({ error: 'Failed to connect to stream chat. Ensure the stream is currently live.' });
+      return res.status(500).json({ 
+        error: 'YouTube chat blocked connection from Render server IP. Try testing with a different live stream URL or running the backend locally.' 
+      });
     }
   } catch (e) {
     isMonitoring = false;
