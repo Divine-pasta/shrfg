@@ -17,7 +17,7 @@ let latestSpikeDetected = false;
 let activeChat = null;
 let messageTimestamps = [];
 let lastSpikeTime = 0;
-let currentStreamUrl = null; // Store current stream URL for clipping
+let currentStreamUrl = null;
 let isClipping = false;
 
 // Helper to extract 11-character YouTube Video ID from standard, live, or youtu.be links
@@ -33,7 +33,6 @@ function triggerClipRecording(videoUrl) {
 
   console.log('Spike triggered! Extracting direct stream URL via yt-dlp...');
 
-  // Step 1: Get the direct m3u8 stream link using yt-dlp
   const ytdlp = spawn('yt-dlp', ['-g', videoUrl]);
   let streamUrl = '';
 
@@ -54,7 +53,6 @@ function triggerClipRecording(videoUrl) {
 
     console.log('Recording 30s clip with ffmpeg...');
 
-    // Step 2: Use ffmpeg to record 30 seconds (9:16 vertical crop for shorts/reels)
     const ffmpeg = spawn('ffmpeg', [
       '-ss', '00:00:00',
       '-i', directUrl,
@@ -82,6 +80,11 @@ app.get('/', (req, res) => {
   res.send('Clipper Backend is Live');
 });
 
+// Health check endpoint for UptimeRobot / Keep-alive pings
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'ok', isMonitoring });
+});
+
 app.post('/start', async (req, res) => {
   const { url, threshold = 15 } = req.body; 
   const liveId = url ? extractVideoId(url) : null;
@@ -90,10 +93,10 @@ app.post('/start', async (req, res) => {
     return res.status(400).json({ error: 'Valid YouTube Live URL is required' });
   }
 
-  currentStreamUrl = url; // Save URL for clipper
+  currentStreamUrl = url;
 
   if (activeChat) {
-    activeChat.stop();
+    if (activeChat.stop) activeChat.stop();
     activeChat = null;
   }
 
@@ -110,16 +113,15 @@ app.post('/start', async (req, res) => {
     const now = Date.now();
     messageTimestamps.push(now);
 
-    // Keep only messages from the last 4 seconds
+    // Sliding window of 4 seconds (4000 milliseconds)
     messageTimestamps = messageTimestamps.filter((t) => now - t <= 4000);
 
-    // Trigger spike if velocity reaches 15 msgs in 4s and 30s cooldown has passed
+    // Trigger spike if velocity reaches threshold and 30s cooldown has passed
     if (messageTimestamps.length >= threshold && now - lastSpikeTime > 30000) {
       lastSpikeTime = now;
       latestSpikeDetected = true;
       console.log(`Chat spike detected! (${messageTimestamps.length} msgs in 4s)`);
       
-      // Automatically run clipping process on server
       if (currentStreamUrl) {
         triggerClipRecording(currentStreamUrl);
       }
@@ -127,7 +129,7 @@ app.post('/start', async (req, res) => {
   });
 
   activeChat.on('error', (err) => {
-    console.error('LiveChat error:', err);
+    console.error('LiveChat warning/error:', err.message);
   });
 
   activeChat.on('end', () => {
@@ -135,10 +137,15 @@ app.post('/start', async (req, res) => {
     console.log('Live chat ended.');
   });
 
-  const started = await activeChat.start();
-  if (!started) {
+  try {
+    const started = await activeChat.start();
+    if (!started) {
+      isMonitoring = false;
+      return res.status(500).json({ error: 'Failed to connect to stream chat. Ensure the stream is currently live.' });
+    }
+  } catch (e) {
     isMonitoring = false;
-    return res.status(500).json({ error: 'Failed to connect to stream chat. Ensure the stream is currently live.' });
+    return res.status(500).json({ error: 'Failed to initialize chat listener: ' + e.message });
   }
 
   res.json({ success: true, liveId, message: 'Monitoring live chat velocity' });
@@ -146,7 +153,7 @@ app.post('/start', async (req, res) => {
 
 app.post('/stop', (req, res) => {
   if (activeChat) {
-    activeChat.stop();
+    if (activeChat.stop) activeChat.stop();
     activeChat = null;
   }
   isMonitoring = false;
@@ -167,7 +174,7 @@ app.get('/poll', (req, res) => {
   }
 });
 
-// Serve recorded clips so you can download or view them
+// Serve recorded clips publicly for direct viewing/downloading
 app.use('/clips', express.static(clipsDir));
 
 const PORT = process.env.PORT || 3000;
