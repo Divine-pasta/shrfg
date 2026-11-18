@@ -29,7 +29,7 @@ app.get('/', (req, res) => {
 });
 
 app.post('/start', async (req, res) => {
-  const { url, threshold = 15 } = req.body; // Default: 15 messages within 10 seconds triggers a spike
+  const { url, threshold = 15 } = req.body; // Default: 15 messages within 4 seconds triggers a spike
   const liveId = url ? extractVideoId(url) : null;
 
   if (!liveId) {
@@ -55,14 +55,14 @@ app.post('/start', async (req, res) => {
     const now = Date.now();
     messageTimestamps.push(now);
 
-    // Keep only messages from the last 10 seconds
-    messageTimestamps = messageTimestamps.filter((t) => now - t <= 10000);
+    // Keep only messages from the last 4 seconds (4000 milliseconds)
+    messageTimestamps = messageTimestamps.filter((t) => now - t <= 4000);
 
-    // Trigger spike if velocity exceeds threshold and 30s cooldown has passed
+    // Trigger spike if velocity reaches 15 msgs in 4s and 30s cooldown has passed
     if (messageTimestamps.length >= threshold && now - lastSpikeTime > 30000) {
       lastSpikeTime = now;
       latestSpikeDetected = true;
-      console.log(`Chat spike detected! (${messageTimestamps.length} msgs in 10s)`);
+      console.log(`Chat spike detected! (${messageTimestamps.length} msgs in 4s)`);
     }
   });
 
@@ -98,7 +98,7 @@ app.get('/poll', (req, res) => {
   res.json({
     isMonitoring,
     spikeDetected: latestSpikeDetected,
-    messagesLast10s: messageTimestamps.filter((t) => Date.now() - t <= 10000).length
+    messagesLast4s: messageTimestamps.filter((t) => Date.now() - t <= 4000).length
   });
 
   if (latestSpikeDetected) {
