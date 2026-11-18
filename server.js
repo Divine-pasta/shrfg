@@ -17,6 +17,8 @@ let latestSpikeDetected = false;
 let activeChat = null;
 let messageTimestamps = [];
 let lastSpikeTime = 0;
+let currentStreamUrl = null; // Store current stream URL for clipping
+let isClipping = false;
 
 // Helper to extract 11-character YouTube Video ID from standard, live, or youtu.be links
 function extractVideoId(url) {
@@ -24,19 +26,72 @@ function extractVideoId(url) {
   return match ? match[1] : null;
 }
 
+// Function to trigger yt-dlp + ffmpeg clipping on chat spike
+function triggerClipRecording(videoUrl) {
+  if (isClipping) return;
+  isClipping = true;
+
+  console.log('Spike triggered! Extracting direct stream URL via yt-dlp...');
+
+  // Step 1: Get the direct m3u8 stream link using yt-dlp
+  const ytdlp = spawn('yt-dlp', ['-g', videoUrl]);
+  let streamUrl = '';
+
+  ytdlp.stdout.on('data', (data) => {
+    streamUrl += data.toString();
+  });
+
+  ytdlp.on('close', (code) => {
+    if (code !== 0 || !streamUrl.trim()) {
+      console.error('Failed to get stream URL from yt-dlp');
+      isClipping = false;
+      return;
+    }
+
+    const directUrl = streamUrl.trim().split('\n')[0];
+    const timestamp = Date.now();
+    const outputPath = path.join(clipsDir, `clip-${timestamp}.mp4`);
+
+    console.log('Recording 30s clip with ffmpeg...');
+
+    // Step 2: Use ffmpeg to record 30 seconds (9:16 vertical crop for shorts/reels)
+    const ffmpeg = spawn('ffmpeg', [
+      '-ss', '00:00:00',
+      '-i', directUrl,
+      '-t', '30',
+      '-vf', 'scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920',
+      '-c:v', 'libx264',
+      '-preset', 'ultrafast',
+      '-c:a', 'aac',
+      '-y',
+      outputPath
+    ]);
+
+    ffmpeg.on('close', (ffmpegCode) => {
+      isClipping = false;
+      if (ffmpegCode === 0) {
+        console.log(`Successfully saved clip: ${outputPath}`);
+      } else {
+        console.error(`FFmpeg process exited with code ${ffmpegCode}`);
+      }
+    });
+  });
+}
+
 app.get('/', (req, res) => {
   res.send('Clipper Backend is Live');
 });
 
 app.post('/start', async (req, res) => {
-  const { url, threshold = 15 } = req.body; // Default: 15 messages within 4 seconds triggers a spike
+  const { url, threshold = 15 } = req.body; 
   const liveId = url ? extractVideoId(url) : null;
 
   if (!liveId) {
     return res.status(400).json({ error: 'Valid YouTube Live URL is required' });
   }
 
-  // Stop any existing chat listener first
+  currentStreamUrl = url; // Save URL for clipper
+
   if (activeChat) {
     activeChat.stop();
     activeChat = null;
@@ -55,7 +110,7 @@ app.post('/start', async (req, res) => {
     const now = Date.now();
     messageTimestamps.push(now);
 
-    // Keep only messages from the last 4 seconds (4000 milliseconds)
+    // Keep only messages from the last 4 seconds
     messageTimestamps = messageTimestamps.filter((t) => now - t <= 4000);
 
     // Trigger spike if velocity reaches 15 msgs in 4s and 30s cooldown has passed
@@ -63,6 +118,11 @@ app.post('/start', async (req, res) => {
       lastSpikeTime = now;
       latestSpikeDetected = true;
       console.log(`Chat spike detected! (${messageTimestamps.length} msgs in 4s)`);
+      
+      // Automatically run clipping process on server
+      if (currentStreamUrl) {
+        triggerClipRecording(currentStreamUrl);
+      }
     }
   });
 
@@ -91,6 +151,7 @@ app.post('/stop', (req, res) => {
   }
   isMonitoring = false;
   messageTimestamps = [];
+  currentStreamUrl = null;
   res.json({ success: true, message: 'Stopped monitoring' });
 });
 
@@ -105,6 +166,9 @@ app.get('/poll', (req, res) => {
     latestSpikeDetected = false;
   }
 });
+
+// Serve recorded clips so you can download or view them
+app.use('/clips', express.static(clipsDir));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
